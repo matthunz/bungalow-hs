@@ -1,7 +1,9 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -21,14 +23,19 @@ module Bungalow
     insert,
     InsertValuesToSql (..),
 
+    -- * Access
+    Access (..),
+    runAccess,
+    runAccess_,
+    runSql,
+
     -- * Row
-    (:&)(..),
+    (:&) (..),
 
     -- * Database
     Schema,
     field,
     newDatabase,
-    run,
   )
 where
 
@@ -36,6 +43,7 @@ import Bungalow.Database hiding (insert, select)
 import qualified Bungalow.Database as DB
 import Bungalow.Row
 import Bungalow.Table hiding (insert, select)
+import Control.Monad.State
 import Data.Kind
 import Data.Proxy
 import Foreign
@@ -43,7 +51,7 @@ import GHC.TypeLits
 
 class Eval bs a where
   type EvalT (bs :: [Type]) a :: Type
-  eval :: a -> Database bs -> IO (EvalT bs a)
+  eval :: a -> Access bs (EvalT bs a)
 
 class ToSql (db :: [Type]) a where
   toSql :: a -> String
@@ -68,7 +76,9 @@ instance
   where
   type EvalT bs (Select as s) = Row (SelectFromT (Selectable as) (HasTableT s bs))
 
-  eval s = DB.select @s @as @bs (selectColumns s) (selectTable s)
+  eval s = Access $ do
+    db <- get
+    liftIO $ DB.select @s @as @bs (selectColumns s) (selectTable s) db
 
 instance
   (KnownSymbol s, SelectColumnsToSql (SelectFromT (Selectable as) (HasTableT s bs))) =>
@@ -101,9 +111,12 @@ instance
   (HasTable s bs, ToRow (HasTableT s bs) as, Storable (Row (HasTableT s bs))) =>
   Eval bs (Insert s as)
   where
-  type EvalT bs (Insert s as) = Database bs
+  type EvalT bs (Insert s as) = ()
 
-  eval i db = DB.insert (insertTable i) (insertValues i) db
+  eval i = Access $ do
+    db <- get
+    db' <- liftIO $ DB.insert (insertTable i) (insertValues i) db
+    put db'
 
 instance (KnownSymbol s, ToRow (HasTableT s bs) as, InsertValuesToSql (HasTableT s bs)) => ToSql bs (Insert s as) where
   toSql (Insert s as) =
@@ -120,3 +133,20 @@ instance (ToSql db a, InsertValuesToSql as) => InsertValuesToSql ('(s, a) ': as)
     toSql @db a ++ case insertValuesToSql @as as of
       "" -> ""
       xs -> ", " ++ xs
+
+newtype Access db a = Access {unAccess :: StateT (Database db) IO a}
+  deriving (Functor, Applicative, Monad, MonadIO)
+
+runAccess_ :: (NewDatabase db) => Access db a -> IO a
+runAccess_ access = do
+  db <- newDatabase
+  (a, _) <- runAccess access db
+  return a
+
+runAccess :: Access db a -> Database db -> IO (a, Database db)
+runAccess = runStateT . unAccess
+
+runSql :: String -> Access db ()
+runSql sql = Access $ do
+  db <- get
+  liftIO $ DB.run sql db

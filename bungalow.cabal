@@ -23,7 +23,8 @@ library
         binary,
         bytestring,
         containers,
-        parsec
+        parsec,
+        mtl
 
 executable bungalow
     main-is:          Main.hs
