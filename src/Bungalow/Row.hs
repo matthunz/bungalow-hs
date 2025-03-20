@@ -20,6 +20,12 @@ data Row as where
   Nil :: Row '[]
   Cons :: (KnownSymbol s) => Proxy s -> b -> Row bs -> Row ('(s, b) ': bs)
 
+instance Eq (Row '[]) where
+  Nil == Nil = True
+
+instance (Eq a, Eq (Row as)) => Eq (Row ('(s, a) ': as)) where
+  Cons _ a as == Cons _ b bs = a == b && as == bs
+
 instance Storable (Row '[]) where
   sizeOf _ = 0
   alignment _ = 1

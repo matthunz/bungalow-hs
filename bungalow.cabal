@@ -43,4 +43,5 @@ test-suite bungalow-test
     ghc-options:      -Wall
     build-depends:
         base >=4.2,
-        bungalow
+        bungalow,
+        hspec
