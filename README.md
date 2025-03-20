@@ -1,4 +1,7 @@
 # Bungalow
+[![License](https://img.shields.io/badge/license-BSD3-blue.svg)](https://github.com/bungalow-hs/bungalow/blob/main/LICENSE)
+[![Package](https://img.shields.io/hackage/v/bungalow.svg)](https://hackage.haskell.org/package/bungalow)
+[![CI status](https://github.com/matthunz/bungalow-hs/actions/workflows/ci.yml/badge.svg)](https://github.com/matthunz/bungalow-hs/actions)
 
 An in-memory relational database for Haskell.
 
@@ -21,7 +24,7 @@ main = do
 
   -- Or convert queries to SQL
   let sql = toSql @DB q'
-  print sql
+  print sql -- "SELECT email, name FROM users"
 
   -- And then run them on your database from anywhere
   run sql db

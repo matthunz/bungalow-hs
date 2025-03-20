@@ -22,7 +22,7 @@ main = do
 
   -- Or convert queries to SQL
   let sql = toSql @DB q'
-  print sql
+  print sql -- "SELECT email, name FROM users"
 
   -- And then run them on your database from anywhere
   run sql db
