@@ -3,8 +3,10 @@
 
 module Main where
 
+import Bungalow
+import Bungalow.Row
+import Bungalow.Table
 import Data.Int (Int32)
-import MyLib
 
 main :: IO ()
 main = do

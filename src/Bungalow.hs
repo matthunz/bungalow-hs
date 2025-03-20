@@ -12,8 +12,10 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module MyLib where
+module Bungalow where
 
+import Bungalow.Row
+import Bungalow.Table
 import Data.Char
 import Data.Kind
 import Data.Map (Map)
@@ -21,113 +23,21 @@ import qualified Data.Map as Map
 import Data.Proxy
 import Data.Typeable
 import Foreign
-import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
+import GHC.TypeLits
 import Text.Parsec
 import Text.Parsec.String
-import Unsafe.Coerce (unsafeCoerce)
+import Unsafe.Coerce
 import Prelude hiding (lookup)
 
-data Row as where
-  Nil :: Row '[]
-  Cons :: (KnownSymbol s) => Proxy s -> b -> Row bs -> Row ('(s, b) ': bs)
+data SomeRowProxy
+  = forall a.
+    (ShowRow a, ShowRowProxy a, Storable (Row a), LookupProxy a) =>
+    SomeRowProxy (RowProxy a)
 
-instance Storable (Row '[]) where
-  sizeOf _ = 0
-  alignment _ = 1
-  peek _ = return Nil
-  poke _ Nil = return ()
-
-instance (KnownSymbol s, Storable a, Storable (Row as)) => Storable (Row ('(s, a) ': as)) where
-  sizeOf _ = sizeOf (undefined :: a) + sizeOf (undefined :: Row as)
-  alignment _ = alignment (undefined :: a) `max` alignment (undefined :: Row as)
-  peek p = do
-    a <- peek (castPtr p)
-    as <- peek (castPtr (p `plusPtr` sizeOf a))
-    return (Cons (Proxy @s) a as)
-  poke p (Cons _ a as) = do
-    poke (castPtr p) a
-    poke (castPtr (p `plusPtr` sizeOf a)) as
-
-instance (ShowRow a) => Show (Row a) where
-  show r = "(" ++ showRow r
-
-class ShowRow a where
-  showRow :: Row a -> String
-
-instance ShowRow '[] where
-  showRow Nil = ")"
-
-instance {-# OVERLAPPING #-} (Show a) => ShowRow '[ '(s, a)] where
-  showRow (Cons _ a Nil) = show a ++ ")"
-
-instance (Show a, ShowRow bs) => ShowRow ('(s, a) ': bs) where
-  showRow (Cons _ a as) = show a ++ rest
-    where
-      rest = case showRow as of
-        ")" -> ")"
-        xs -> ", " ++ xs
-
-class ToRow bs a where
-  toRow :: a -> Row bs
-
-infixr 5 :&
-
-data a :& b = a :& b
-  deriving (Show)
-
-instance ToRow bs (Row bs) where
-  toRow = id
-
-instance (KnownSymbol s) => ToRow '[ '(s, a)] a where
-  toRow a = Cons (Proxy @s) a Nil
-
-instance (KnownSymbol s, ToRow bs as) => ToRow ('(s, a) ': bs) (a :& as) where
-  toRow (a :& as) = Cons (Proxy @s) a (toRow @bs as)
-
-data Table (a :: [(Symbol, Type)]) = Table
-  { tablePtr :: ForeignPtr (Row a),
-    tableOffset :: Int,
-    tableLength :: Int
-  }
-
-newTable :: forall a. (Storable (Row a)) => IO (Table a)
-newTable = do
-  ptr <- mallocForeignPtrBytes (sizeOf (undefined :: Row a))
-  return (Table ptr 0 0)
-
-insert :: forall as bs. (ToRow bs as, Storable (Row bs)) => as -> Table bs -> IO (Table bs)
-insert as t = insertRow (toRow @bs as) t
-
-insertRow :: forall a. (Storable (Row a)) => Row a -> Table a -> IO (Table a)
-insertRow row table = withForeignPtr (tablePtr table) $ \p -> do
-  if tableLength table - tableOffset table < sizeOf (undefined :: Row a)
-    then do
-      poke (p `plusPtr` tableOffset table) row
-      return
-        table
-          { tableOffset = tableOffset table + sizeOf (undefined :: Row a),
-            tableLength = tableLength table + sizeOf (undefined :: Row a)
-          }
-    else do
-      ptr <- mallocForeignPtrBytes (sizeOf (undefined :: Row a) * (tableLength table + 1))
-      withForeignPtr ptr $ \p' -> do
-        copyBytes p' p (tableOffset table)
-        free p
-        poke (p' `plusPtr` tableOffset table) row
-        return
-          Table
-            { tablePtr = ptr,
-              tableOffset = tableOffset table + sizeOf (undefined :: Row a),
-              tableLength = tableLength table + sizeOf (undefined :: Row a)
-            }
-
-lookup :: forall a b. (Storable (Row a)) => Int -> Table b -> IO (Row a)
-lookup i table = withForeignPtr (tablePtr table) $ \p -> do
-  peek (p `plusPtr` (i * sizeOf (undefined :: Row a)))
-
-data SomeRowProxy = forall a. (ShowRow a, ShowRowProxy a, Storable (Row a), LookupProxy a) => SomeRowProxy (RowProxy a)
-
-data SomeColumnProxy = forall s a. (KnownSymbol s, Typeable a, Storable a, Show a) => SomeColumnProxy (Proxy ('(s, a))) Int
+data SomeColumnProxy
+  = forall s a.
+    (KnownSymbol s, Typeable a, Storable a, Show a) =>
+    SomeColumnProxy (Proxy ('(s, a))) Int
 
 newtype TableSchema = TableSchema {unTableSchema :: Map String (SomeColumnProxy)}
 
@@ -138,7 +48,8 @@ instance ToRowProxy '[] where
   toRowProxy _ = NilProxy
 
 instance (KnownSymbol s, Storable a, ToRowProxy as) => ToRowProxy ('(s, a) ': as) where
-  toRowProxy offset = ConsProxy (Proxy @'(s, a)) offset (toRowProxy @as $ offset + sizeOf (undefined :: a))
+  toRowProxy offset =
+    ConsProxy (Proxy @'(s, a)) offset (toRowProxy @as $ offset + sizeOf (undefined :: a))
 
 class ToTableSchema (a :: [(Symbol, Type)]) where
   toTableSchema :: Int -> TableSchema
@@ -146,9 +57,13 @@ class ToTableSchema (a :: [(Symbol, Type)]) where
 instance ToTableSchema '[] where
   toTableSchema _ = TableSchema Map.empty
 
-instance (KnownSymbol s, Typeable a, Storable a, Show a, ToTableSchema as) => ToTableSchema ('(s, a) ': as) where
+instance
+  (KnownSymbol s, Typeable a, Storable a, Show a, ToTableSchema as) =>
+  ToTableSchema ('(s, a) ': as)
+  where
   toTableSchema i = case toTableSchema @as (i + sizeOf (undefined :: a)) of
-    TableSchema m -> TableSchema (Map.insert (symbolVal (Proxy @s)) (SomeColumnProxy (Proxy @('(s, a))) i) m)
+    TableSchema m ->
+      TableSchema (Map.insert (symbolVal (Proxy @s)) (SomeColumnProxy (Proxy @('(s, a))) i) m)
 
 data SQLSelect = SQLSelect
   { selectFields :: [String],
@@ -185,11 +100,18 @@ identifier = do
 spaces1 :: Parser ()
 spaces1 = skipMany1 space
 
-data SomeTable = forall a. (ShowRow a, ShowRowProxy a, ToRowProxy a, ToTableSchema a, Storable (Row a)) => SomeTable (Table a)
+data SomeTable
+  = forall a.
+    (ShowRow a, ShowRowProxy a, ToRowProxy a, ToTableSchema a, Storable (Row a)) =>
+    SomeTable (Table a)
 
 newtype Database = Database {unDatabase :: Map String SomeTable}
 
-database :: (ShowRow a, ShowRowProxy a, ToRowProxy a, ToTableSchema a, Storable (Row a)) => String -> Table a -> Database
+database ::
+  (ShowRow a, ShowRowProxy a, ToRowProxy a, ToTableSchema a, Storable (Row a)) =>
+  String ->
+  Table a ->
+  Database
 database ident t = Database (Map.singleton ident (SomeTable t))
 
 data TableProxy a = TableProxy (RowProxy a) String
@@ -209,10 +131,12 @@ instance ShowRowProxy '[] where
   showRowProxy _ = ")"
 
 instance {-# OVERLAPPING #-} (KnownSymbol s, Typeable a) => ShowRowProxy '[ '(s, a)] where
-  showRowProxy (ConsProxy _ offset NilProxy) = symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ ")"
+  showRowProxy (ConsProxy _ offset NilProxy) =
+    symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ ")"
 
 instance (KnownSymbol s, Typeable a, ShowRowProxy as) => ShowRowProxy ('(s, a) ': as) where
-  showRowProxy (ConsProxy _ offset as) = symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ rest
+  showRowProxy (ConsProxy _ offset as) =
+    symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ rest
     where
       rest = case showRowProxy as of
         ")" -> ")"
@@ -247,7 +171,10 @@ data SelectExpr a (b :: [(Symbol, Type)]) = SelectExpr
 instance (ShowRowProxy a, ShowRowProxy b) => Show (SelectExpr a b) where
   show (SelectExpr fields t) = "SELECT " ++ show fields ++ " FROM (" ++ show t
 
-data SomeSelectExpr = forall a b. (Show (SelectExpr a b), Storable (Row b), Show (Row b), LookupProxy b) => SomeSelectExpr (SelectExpr a b)
+data SomeSelectExpr
+  = forall a b.
+    (Show (SelectExpr a b), Storable (Row b), Show (Row b), LookupProxy b) =>
+    SomeSelectExpr (SelectExpr a b)
 
 instance Show SomeSelectExpr where
   show (SomeSelectExpr s) = show s
