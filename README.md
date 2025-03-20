@@ -1,9 +1,8 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE TypeApplications #-}
+# Bungalow
 
-module Main where
+An in-memory relational database for Haskell.
 
+```hs
 import Bungalow
 import Bungalow.Database (Schema, field, newDatabase, run)
 import Bungalow.Row
@@ -29,3 +28,4 @@ main = do
   where
     q = insert #users ((1 :: Int32) :& (2 :: Int32))
     q' = select (field #email :& field #name) #users
+```
