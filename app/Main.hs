@@ -12,4 +12,6 @@ main = do
   t <- newTable @'[ '("x", Int32), '("y", Int32)]
   t' <- insert (Cons (Proxy @"x") 1 (Cons (Proxy @"y") 2 Nil)) t
   let db = database "users" t'
+  x <- selectFrom @'["y", "x"] t'
+  print x
   run "SELECT y FROM users" db

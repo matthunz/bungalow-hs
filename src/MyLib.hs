@@ -8,6 +8,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
 module MyLib where
@@ -196,17 +197,39 @@ instance (KnownSymbol s, Typeable a, ShowRowProxy as) => ShowRowProxy ('(s, a) '
         ")" -> ")"
         xs -> ", " ++ xs
 
-class SelectFrom' (s :: Symbol) b a where
-  selectFrom' :: Table a -> b
+type family SelectFromT' (s :: Symbol) (as :: [(Symbol, Type)]) where
+  SelectFromT' s ('(s, a) ': xs) = a
+  SelectFromT' s ('(t, a) ': xs) = SelectFromT' s xs
 
-class SelectFrom b a where
-  selectFrom :: Table a -> Row b
+class SelectFrom' (s :: Symbol) as where
+  selectFrom' :: Int -> Table as -> IO (SelectFromT' s as)
+
+instance {-# OVERLAPPING #-} (Storable a) => SelectFrom' s ('(s, a) ': xs) where
+  selectFrom' offset t = withForeignPtr (tablePtr t) $
+    \p -> peek (p `plusPtr` offset)
+
+instance (Storable a, SelectFrom' s xs) => SelectFrom' s ('(t, a) ': xs) where
+  selectFrom' offset t = unsafeCoerce $ selectFrom' @s @xs (offset + sizeOf (undefined :: a)) (unsafeCoerce t)
+
+type family (++) (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) where
+  '[] ++ bs = bs
+  (a ': as) ++ bs = a ': (as ++ bs)
+
+type family SelectFromT (s :: [Symbol]) (as :: [(Symbol, Type)]) where
+  SelectFromT '[] as = '[]
+  SelectFromT (s ': ss) as =  '(s, SelectFromT' s as) ': SelectFromT ss as
+
+class SelectFrom s a where
+  selectFrom :: Table a -> IO (Row (SelectFromT s a))
 
 instance SelectFrom '[] a where
-  selectFrom _ = Nil
+  selectFrom _ = return Nil
 
-instance (KnownSymbol s, SelectFrom' s b as, SelectFrom bs as) => SelectFrom ('(s, b) ': bs) as where
-  selectFrom table = Cons (Proxy @s) (selectFrom' @s @b @as table) (selectFrom table)
+instance (KnownSymbol s, SelectFrom' s as, SelectFrom bs as) => SelectFrom (s ': bs) as where
+  selectFrom table = do
+    x <- selectFrom' @s  @as 0 table
+    xs <- selectFrom @bs @as table
+    return (Cons (Proxy @s) x xs)
 
 data SelectExpr a (b :: [(Symbol, Type)]) = SelectExpr
   { selectExprFields :: RowProxy b,
