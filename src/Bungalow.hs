@@ -1,13 +1,10 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -16,255 +13,91 @@
 
 module Bungalow where
 
+import Bungalow.Database
+import qualified Bungalow.Database as DB
 import Bungalow.Row
 import Bungalow.Table
-import qualified Bungalow.Table as Table
-import Data.Char
 import Data.Kind
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Data.Proxy
-import Data.Typeable
 import Foreign
-import GHC.OverloadedLabels
 import GHC.TypeLits
-import Text.Parsec
-import Text.Parsec.String
-import Unsafe.Coerce (unsafeCoerce)
-import Prelude hiding (lookup)
 
-data SomeRowProxy
-  = forall a.
-    (ShowRow a, ShowRowProxy a, Storable (Row a), LookupProxy a) =>
-    SomeRowProxy (RowProxy a)
+class Eval bs a where
+  type EvalT (bs :: [Type]) a :: Type
+  eval :: a -> Database bs -> IO (EvalT bs a)
 
-data SomeColumnProxy
-  = forall s a.
-    (KnownSymbol s, Typeable a, Storable a, Show a) =>
-    SomeColumnProxy (Proxy ('(s, a))) Int
+class ToSql (db :: [Type]) a where
+  toSql :: a -> String
 
-newtype TableSchema = TableSchema {unTableSchema :: Map String (SomeColumnProxy)}
+instance ToSql db Int32 where
+  toSql = show
 
-class ToTableSchema (a :: [(Symbol, Type)]) where
-  toTableSchema :: Int -> TableSchema
-
-instance ToTableSchema '[] where
-  toTableSchema _ = TableSchema Map.empty
-
-instance
-  (KnownSymbol s, Typeable a, Storable a, Show a, ToTableSchema as) =>
-  ToTableSchema ('(s, a) ': as)
-  where
-  toTableSchema i = case toTableSchema @as (i + sizeOf (undefined :: a)) of
-    TableSchema m ->
-      TableSchema (Map.insert (symbolVal (Proxy @s)) (SomeColumnProxy (Proxy @('(s, a))) i) m)
-
-data SQLSelect = SQLSelect
-  { selectFields :: [String],
-    fromTable :: String
+data Select as s = Select
+  { selectColumns :: as,
+    selectTable :: Alias s
   }
-  deriving (Show)
 
-sqlSelectParser :: Parser SQLSelect
-sqlSelectParser = do
-  spaces
-  _ <- stringCI "select"
-  spaces1
-  fields <- sepBy1 identifier (char ',' >> spaces)
-  spaces1
-  _ <- stringCI "from"
-  spaces1
-  table <- identifier
-  spaces
-  eof
-  return $ SQLSelect fields table
-
-stringCI :: String -> Parser String
-stringCI = try . mapM charCI
-
-charCI :: Char -> Parser Char
-charCI c = char (toLower c) <|> char (toUpper c)
-
-identifier :: Parser String
-identifier = do
-  first <- letter <|> char '_'
-  rest <- many (alphaNum <|> char '_')
-  return (first : rest)
-
-spaces1 :: Parser ()
-spaces1 = skipMany1 space
-
-data SomeTable
-  = forall a.
-    (ShowRow a, ShowRowProxy a, ToRowProxy a, ToTableSchema a, Storable (Row a)) =>
-    SomeTable (Table a)
-
-data Schema (s :: Symbol) (a :: [(Symbol, Type)])
-
-class NewDatabase (as :: [Type]) where
-  newDatabase :: IO (Database as)
-
-instance NewDatabase '[] where
-  newDatabase = return $ Database Map.empty
+select :: as -> Alias s -> Select as s
+select = Select
 
 instance
-  ( KnownSymbol s,
-    Storable (Row a),
-    ShowRow a,
-    ShowRowProxy a,
-    ToRowProxy a,
-    ToTableSchema a,
-    NewDatabase as
-  ) =>
-  NewDatabase (Schema s a ': as)
-  where
-  newDatabase = do
-    t <- newTable @a
-    db <- newDatabase @as
-    return $ (Database (Map.singleton (symbolVal $ Proxy @s) (SomeTable t)) <> unsafeCoerce db)
-
-newtype Database (as :: [(Type)]) = Database {unDatabase :: Map String SomeTable}
-  deriving (Semigroup, Monoid)
-
-type family HasTableT' (s :: Symbol) (as :: [Type]) :: Bool where
-  HasTableT' s '[] = 'False
-  HasTableT' s (Schema s a ': as) = 'True
-  HasTableT' s (Schema t a ': as) = HasTableT' s as
-
-type family HasTableT (s :: Symbol) (as :: [Type]) :: [(Symbol, Type)] where
-  HasTableT s '[] = '[]
-  HasTableT s (Schema s a ': as) = a
-  HasTableT s (Schema t a ': as) = HasTableT s as
-
-class HasTable' (flag :: Bool) (s :: Symbol) (as :: [(Type)]) where
-  getTable' :: Database as -> Table (HasTableT s as)
-  withTable' :: (Table (HasTableT s as) -> IO (Table (HasTableT s as))) -> Database as -> IO (Database as)
-
-instance
-  ( KnownSymbol s,
-    ShowRow a,
-    ShowRowProxy a,
-    ToRowProxy a,
-    ToTableSchema a,
-    Storable (Row a)
-  ) =>
-  HasTable' True s (Schema s a ': as)
-  where
-  getTable' (Database db) = case Map.lookup (symbolVal $ Proxy @s) db of
-    Just (SomeTable t) -> unsafeCoerce t
-    Nothing -> error "TODO"
-  withTable' f (Database db) = case Map.lookup (symbolVal $ Proxy @s) db of
-    Just (SomeTable t) -> do
-      b <- f (unsafeCoerce t)
-      return $ Database (Map.insert (symbolVal $ Proxy @s) (SomeTable b) db)
-    Nothing -> error "TODO"
-
-instance (HasTable' (HasTableT' s as) s as) => HasTable' False s (Schema t a ': as) where
-  getTable' (Database db) = unsafeCoerce $ getTable' @(HasTableT' s as) @s @as $ Database db
-  withTable' f db = unsafeCoerce $ withTable' @(HasTableT' s as) @s @as (unsafeCoerce f) $ unsafeCoerce db
-
-class HasTable (s :: Symbol) (as :: [(Type)]) where
-  getTable :: Database as -> Table (HasTableT s as)
-  withTable :: (Table (HasTableT s as) -> IO (Table (HasTableT s as))) -> Database as -> IO (Database as)
-
-instance (HasTable' (HasTableT' s as) s as) => HasTable s as where
-  getTable = getTable' @(HasTableT' s as) @s @as
-  withTable = withTable' @(HasTableT' s as) @s @as
-
-data Alias (alias :: Symbol) = Alias deriving (Eq, Ord, Show)
-
-aliasVal :: forall s. (KnownSymbol s) => Alias s -> String
-aliasVal _ = symbolVal (Proxy @s)
-
-instance (a ~ b) => IsLabel a (Alias b) where
-  fromLabel = Alias
-
-type family (++) (as :: [k]) (bs :: [k]) :: [k] where
-  '[] ++ bs = bs
-  (a ': as) ++ bs = a ': (as ++ bs)
-
-newtype Field a = Field (Alias a)
-
-field :: forall s. (KnownSymbol s) => Alias s -> Field s
-field = Field
-
-type family Selectable (a :: Type) :: [Symbol] where
-  Selectable (Field s) = '[s]
-  Selectable (a :& b) = Selectable a ++ Selectable b
-
-select ::
-  forall s as bs.
   ( HasTable s bs,
     LookupProxy (SelectFromT (Selectable as) (HasTableT s bs)),
     ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs))
   ) =>
-  as ->
-  Alias s ->
-  Database bs ->
-  IO (Row (SelectFromT (Selectable as) (HasTableT s bs)))
-select _ _ db = Table.select @(Selectable as) @(HasTableT s bs) $ getTable @s db
+  Eval bs (Select as s)
+  where
+  type EvalT bs (Select as s) = Row (SelectFromT (Selectable as) (HasTableT s bs))
 
-insert ::
-  forall s as bs.
-  (HasTable s bs, ToRow (HasTableT s bs) as, Storable (Row (HasTableT s bs))) =>
-  Alias s ->
-  as ->
-  Database bs ->
-  IO (Database bs)
-insert _ as db =
-  withTable @s (\t -> Table.insert @as @(HasTableT s bs) as t) db
+  eval s = DB.select @s @as @bs (selectColumns s) (selectTable s)
 
-data TableProxy a = TableProxy (RowProxy a) String
-  deriving (Show)
+instance
+  (KnownSymbol s, SelectColumnsToSql (SelectFromT (Selectable as) (HasTableT s bs))) =>
+  ToSql db (Select as s)
+  where
+  toSql (Select _ s) =
+    "SELECT " ++ selectColumnsToSql @(SelectFromT (Selectable as) (HasTableT s bs)) ++ " FROM " ++ aliasVal s
 
-data SelectExpr a (b :: [(Symbol, Type)]) = SelectExpr
-  { selectExprFields :: RowProxy b,
-    selectExprfromTable :: TableProxy a
+class SelectColumnsToSql (as :: [(Symbol, Type)]) where
+  selectColumnsToSql :: String
+
+instance SelectColumnsToSql '[] where
+  selectColumnsToSql = ""
+
+instance (KnownSymbol s, SelectColumnsToSql as) => SelectColumnsToSql ('(s, a) ': as) where
+  selectColumnsToSql =
+    symbolVal (Proxy @s) ++ case selectColumnsToSql @as of
+      "" -> ""
+      xs -> ", " ++ xs
+
+data Insert s as = Insert
+  { insertTable :: Alias s,
+    insertValues :: as
   }
 
-instance (ShowRowProxy a, ShowRowProxy b) => Show (SelectExpr a b) where
-  show (SelectExpr fields t) = "SELECT " ++ show fields ++ " FROM (" ++ show t
+insert :: Alias s -> as -> Insert s as
+insert = Insert
 
-data SomeSelectExpr
-  = forall a b.
-    (Show (SelectExpr a b), Storable (Row b), Show (Row b), LookupProxy b) =>
-    SomeSelectExpr (SelectExpr a b)
+instance
+  (HasTable s bs, ToRow (HasTableT s bs) as, Storable (Row (HasTableT s bs))) =>
+  Eval bs (Insert s as)
+  where
+  type EvalT bs (Insert s as) = Database bs
 
-instance Show SomeSelectExpr where
-  show (SomeSelectExpr s) = show s
+  eval i db = DB.insert (insertTable i) (insertValues i) db
 
-tableToSchema :: forall a. (ToTableSchema a) => Table a -> TableSchema
-tableToSchema _ = toTableSchema @a 0
+instance (KnownSymbol s, ToRow (HasTableT s bs) as,InsertValuesToSql  (HasTableT s bs)) => ToSql bs (Insert s as) where
+  toSql (Insert s as) =
+    "INSERT INTO " ++ aliasVal s ++ " VALUES (" ++ insertValuesToSql (toRow @(HasTableT s bs) as) ++ ")"
 
-tableToRowProxy :: forall a. (ToRowProxy a) => String -> Table a -> TableProxy a
-tableToRowProxy ident _ = TableProxy (toRowProxy @a 0) ident
+class InsertValuesToSql (as :: [(Symbol, Type)]) where
+  insertValuesToSql :: Row as -> String
 
-compile :: SQLSelect -> Database as -> SomeSelectExpr
-compile sqlSelect db = case sqlSelect of
-  SQLSelect fields table -> case Map.lookup table (unDatabase db) of
-    Just (SomeTable t) ->
-      let schema = tableToSchema t
-          fields' =
-            foldr
-              ( \ident (SomeRowProxy acc) -> case Map.lookup ident (unTableSchema schema) of
-                  Just (SomeColumnProxy a offset) -> SomeRowProxy (ConsProxy a offset acc)
-                  Nothing -> error "TODO"
-              )
-              (SomeRowProxy NilProxy)
-              fields
-       in case fields' of
-            SomeRowProxy a -> SomeSelectExpr $ SelectExpr a (tableToRowProxy table t)
-    Nothing -> error "TODO"
+instance InsertValuesToSql '[] where
+  insertValuesToSql _ = ""
 
-run :: String -> Database as -> IO ()
-run s db = case parse sqlSelectParser "" s of
-  Left e -> print e
-  Right sqlSelect -> case compile sqlSelect db of
-    SomeSelectExpr selectExpr -> do
-      print selectExpr
-      let (TableProxy _ tableIdent) = selectExprfromTable selectExpr
-      case Map.lookup tableIdent (unDatabase db) of
-        Just (SomeTable t) -> do
-          x <- lookupProxy (selectExprFields selectExpr) t
-          print x
-        Nothing -> error ""
+instance (ToSql db a, InsertValuesToSql as) => InsertValuesToSql ('(s, a) ': as) where
+  insertValuesToSql (Cons _ a as) =
+    toSql @db a ++ case insertValuesToSql @as as of
+      "" -> ""
+      xs -> ", " ++ xs

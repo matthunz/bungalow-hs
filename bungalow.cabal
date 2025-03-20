@@ -11,6 +11,7 @@ extra-doc-files: CHANGELOG.md
 library
     exposed-modules:
         Bungalow
+        Bungalow.Database
         Bungalow.Row
         Bungalow.Table
 
