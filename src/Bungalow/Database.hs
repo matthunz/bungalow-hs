@@ -202,7 +202,7 @@ select ::
   as ->
   Alias s ->
   Database bs ->
-  IO (Maybe (Row (SelectFromT (Selectable as) (HasTableT s bs))))
+  IO [Row (SelectFromT (Selectable as) (HasTableT s bs))]
 select _ _ db = Table.select @(Selectable as) @(HasTableT s bs) $ getTable @s db
 
 insert ::

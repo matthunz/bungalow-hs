@@ -16,12 +16,12 @@ main = hspec $ do
   describe "Bungalow.select" $ do
     it "queries an empty row" $ do
       users <- runAccess_ @DB $ eval selectUsers
-      users `shouldBe` Nothing
+      users `shouldBe` []
     it "returns a row" $ do
       users <- runAccess_ @DB $ do
         eval insertUser
         eval selectUsers
-      users `shouldBe` Just (toRow ((1 :: Int32) :& (2 :: Int32)))
+      users `shouldBe` [toRow ((1 :: Int32) :& (2 :: Int32))]
   where
     insertUser = insert #users ((1 :: Int32) :& (2 :: Int32))
     selectUsers = select (col #email :& col #name) #users

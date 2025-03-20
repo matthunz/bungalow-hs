@@ -75,7 +75,7 @@ instance
   ) =>
   Eval bs (Select as s)
   where
-  type EvalT bs (Select as s) = Maybe(Row (SelectFromT (Selectable as) (HasTableT s bs)))
+  type EvalT bs (Select as s) = [Row (SelectFromT (Selectable as) (HasTableT s bs))]
 
   eval s = Access $ do
     db <- get

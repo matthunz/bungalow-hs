@@ -1,16 +1,11 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Bungalow.Table where
 
@@ -59,13 +54,6 @@ insertRow row table = withForeignPtr (tablePtr table) $ \p -> do
               tableLength = tableLength table + sizeOf (undefined :: Row a)
             }
 
-lookup :: forall a b. (Storable (Row a)) => Int -> Table b -> IO (Maybe (Row a))
-lookup i table = withForeignPtr (tablePtr table) $ \p -> do
-  let offset = i * sizeOf (undefined :: Row a)
-  if offset < tableOffset table
-    then Just <$> peek (p `plusPtr` offset)
-    else return Nothing
-
 type family SelectFromT' (s :: Symbol) (as :: [(Symbol, Type)]) where
   SelectFromT' s ('(s, a) ': xs) = a
   SelectFromT' s ('(t, a) ': xs) = SelectFromT' s xs
@@ -93,9 +81,28 @@ select ::
     Storable (Row (SelectFromT as bs))
   ) =>
   Table bs ->
+  IO [(Row (SelectFromT as bs))]
+select = select' 0
+  where
+    select' offset table = do
+      res <- lookup @as @bs offset table
+      case res of
+        Nothing -> return []
+        Just row -> do
+          rest <- select' (offset + sizeOf (undefined :: Row (SelectFromT as bs))) table
+          return $ row : rest
+
+lookup ::
+  forall as bs.
+  ( LookupProxy (SelectFromT as bs),
+    ToRowProxy (SelectFromT as bs),
+    Storable (Row (SelectFromT as bs))
+  ) =>
+  Int ->
+  Table bs ->
   IO (Maybe (Row (SelectFromT as bs)))
-select table = do
+lookup offset table = do
   let row = toRowProxy @(SelectFromT as bs) 0
-  if tableLength table >= (sizeOf (undefined :: Row (SelectFromT as bs)))
+  if tableLength table - offset >= (sizeOf (undefined :: Row (SelectFromT as bs)))
     then Just <$> lookupProxy row table
     else return Nothing
