@@ -11,12 +11,31 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Bungalow where
+module Bungalow
+  ( Eval (..),
+    ToSql (..),
+    Select (..),
+    select,
+    SelectColumnsToSql (..),
+    Insert (..),
+    insert,
+    InsertValuesToSql (..),
 
-import Bungalow.Database
+    -- * Row
+    (:&)(..),
+
+    -- * Database
+    Schema,
+    field,
+    newDatabase,
+    run,
+  )
+where
+
+import Bungalow.Database hiding (insert, select)
 import qualified Bungalow.Database as DB
 import Bungalow.Row
-import Bungalow.Table
+import Bungalow.Table hiding (insert, select)
 import Data.Kind
 import Data.Proxy
 import Foreign
@@ -86,7 +105,7 @@ instance
 
   eval i db = DB.insert (insertTable i) (insertValues i) db
 
-instance (KnownSymbol s, ToRow (HasTableT s bs) as,InsertValuesToSql  (HasTableT s bs)) => ToSql bs (Insert s as) where
+instance (KnownSymbol s, ToRow (HasTableT s bs) as, InsertValuesToSql (HasTableT s bs)) => ToSql bs (Insert s as) where
   toSql (Insert s as) =
     "INSERT INTO " ++ aliasVal s ++ " VALUES (" ++ insertValuesToSql (toRow @(HasTableT s bs) as) ++ ")"
 
