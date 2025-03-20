@@ -10,6 +10,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module MyLib where
 
@@ -66,6 +67,23 @@ instance (Show a, ShowRow bs) => ShowRow ('(s, a) ': bs) where
         ")" -> ")"
         xs -> ", " ++ xs
 
+class ToRow bs a where
+  toRow :: a -> Row bs
+
+infixr 5 :&
+
+data a :& b = a :& b
+  deriving (Show)
+
+instance ToRow bs (Row bs) where
+  toRow = id
+
+instance (KnownSymbol s) => ToRow '[ '(s, a)] a where
+  toRow a = Cons (Proxy @s) a Nil
+
+instance (KnownSymbol s, ToRow bs as) => ToRow ('(s, a) ': bs) (a :& as) where
+  toRow (a :& as) = Cons (Proxy @s) a (toRow @bs as)
+
 data Table (a :: [(Symbol, Type)]) = Table
   { tablePtr :: ForeignPtr (Row a),
     tableOffset :: Int,
@@ -77,8 +95,11 @@ newTable = do
   ptr <- mallocForeignPtrBytes (sizeOf (undefined :: Row a))
   return (Table ptr 0 0)
 
-insert :: forall a. (Storable (Row a)) => Row a -> Table a -> IO (Table a)
-insert row table = withForeignPtr (tablePtr table) $ \p -> do
+insert :: forall as bs. (ToRow bs as, Storable (Row bs)) => as -> Table bs -> IO (Table bs)
+insert as t = insertRow (toRow @bs as) t
+
+insertRow :: forall a. (Storable (Row a)) => Row a -> Table a -> IO (Table a)
+insertRow row table = withForeignPtr (tablePtr table) $ \p -> do
   if tableLength table - tableOffset table < sizeOf (undefined :: Row a)
     then do
       poke (p `plusPtr` tableOffset table) row
@@ -201,35 +222,22 @@ type family SelectFromT' (s :: Symbol) (as :: [(Symbol, Type)]) where
   SelectFromT' s ('(s, a) ': xs) = a
   SelectFromT' s ('(t, a) ': xs) = SelectFromT' s xs
 
-class SelectFrom' (s :: Symbol) as where
-  selectFrom' :: Int -> Table as -> IO (SelectFromT' s as)
-
-instance {-# OVERLAPPING #-} (Storable a) => SelectFrom' s ('(s, a) ': xs) where
-  selectFrom' offset t = withForeignPtr (tablePtr t) $
-    \p -> peek (p `plusPtr` offset)
-
-instance (Storable a, SelectFrom' s xs) => SelectFrom' s ('(t, a) ': xs) where
-  selectFrom' offset t = unsafeCoerce $ selectFrom' @s @xs (offset + sizeOf (undefined :: a)) (unsafeCoerce t)
-
 type family (++) (as :: [(Symbol, Type)]) (bs :: [(Symbol, Type)]) where
   '[] ++ bs = bs
   (a ': as) ++ bs = a ': (as ++ bs)
 
 type family SelectFromT (s :: [Symbol]) (as :: [(Symbol, Type)]) where
   SelectFromT '[] as = '[]
-  SelectFromT (s ': ss) as =  '(s, SelectFromT' s as) ': SelectFromT ss as
+  SelectFromT (s ': ss) as = '(s, SelectFromT' s as) ': SelectFromT ss as
 
-class SelectFrom s a where
-  selectFrom :: Table a -> IO (Row (SelectFromT s a))
-
-instance SelectFrom '[] a where
-  selectFrom _ = return Nil
-
-instance (KnownSymbol s, SelectFrom' s as, SelectFrom bs as) => SelectFrom (s ': bs) as where
-  selectFrom table = do
-    x <- selectFrom' @s  @as 0 table
-    xs <- selectFrom @bs @as table
-    return (Cons (Proxy @s) x xs)
+select ::
+  forall as bs.
+  (LookupProxy (SelectFromT as bs), ToRowProxy (SelectFromT as bs)) =>
+  Table bs ->
+  IO (Row (SelectFromT as bs))
+select table = do
+  let row = toRowProxy @(SelectFromT as bs) 0
+  lookupProxy row table
 
 data SelectExpr a (b :: [(Symbol, Type)]) = SelectExpr
   { selectExprFields :: RowProxy b,
