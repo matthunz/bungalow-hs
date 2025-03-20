@@ -34,12 +34,12 @@ module Bungalow
 
     -- * Database
     Schema,
-    field,
+    col,
     newDatabase,
   )
 where
 
-import Bungalow.Database hiding (insert, select)
+import Bungalow.Database hiding (insert, select, selectColumns)
 import qualified Bungalow.Database as DB
 import Bungalow.Row
 import Bungalow.Table hiding (insert, select)

@@ -28,7 +28,7 @@ import Data.Typeable
 import Foreign
 import GHC.OverloadedLabels
 import GHC.TypeLits
-import Text.Parsec
+import Text.Parsec hiding (Column)
 import Text.Parsec.String
 import Unsafe.Coerce (unsafeCoerce)
 import Prelude hiding (lookup)
@@ -60,7 +60,7 @@ instance
       TableSchema (Map.insert (symbolVal (Proxy @s)) (SomeColumnProxy (Proxy @('(s, a))) i) m)
 
 data SQLSelect = SQLSelect
-  { selectFields :: [String],
+  { selectColumns :: [String],
     fromTable :: String
   }
   deriving (Show)
@@ -183,13 +183,13 @@ type family (++) (as :: [k]) (bs :: [k]) :: [k] where
   '[] ++ bs = bs
   (a ': as) ++ bs = a ': (as ++ bs)
 
-newtype Field a = Field (Alias a)
+newtype Column a = Column (Alias a)
 
-field :: forall s. (KnownSymbol s) => Alias s -> Field s
-field = Field
+col :: forall s. (KnownSymbol s) => Alias s -> Column s
+col = Column
 
 type family Selectable (a :: Type) :: [Symbol] where
-  Selectable (Field s) = '[s]
+  Selectable (Column s) = '[s]
   Selectable (a :& b) = Selectable a ++ Selectable b
 
 select ::
@@ -218,7 +218,7 @@ data TableProxy a = TableProxy (RowProxy a) String
   deriving (Show)
 
 data SelectExpr a (b :: [(Symbol, Type)]) = SelectExpr
-  { selectExprFields :: RowProxy b,
+  { selectExprColumns :: RowProxy b,
     selectExprfromTable :: TableProxy a
   }
 
@@ -265,6 +265,6 @@ run s db = case parse sqlSelectParser "" s of
       let (TableProxy _ tableIdent) = selectExprfromTable selectExpr
       case Map.lookup tableIdent (unDatabase db) of
         Just (SomeTable t) -> do
-          x <- lookupProxy (selectExprFields selectExpr) t
+          x <- lookupProxy (selectExprColumns selectExpr) t
           print x
         Nothing -> error ""

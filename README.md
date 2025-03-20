@@ -27,7 +27,7 @@ access = do
   runSql sql
   where
     insertUser = insert #users ((1 :: Int32) :& (2 :: Int32))
-    selectUsers = select (field #email :& field #name) #users
+    selectUsers = select (col #email :& col #name) #users
 
 main :: IO ()
 main = runAccess_ access
