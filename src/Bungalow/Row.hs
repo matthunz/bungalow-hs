@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -9,7 +10,9 @@
 
 module Bungalow.Row where
 
+import Data.Kind
 import Data.Proxy
+import Data.Typeable
 import Foreign
 import GHC.TypeLits
 
@@ -69,3 +72,38 @@ instance (KnownSymbol s) => ToRow '[ '(s, a)] a where
 
 instance (KnownSymbol s, ToRow bs as) => ToRow ('(s, a) ': bs) (a :& as) where
   toRow (a :& as) = Cons (Proxy @s) a (toRow @bs as)
+
+data RowProxy (as :: [(Symbol, Type)]) where
+  NilProxy :: RowProxy '[]
+  ConsProxy :: Proxy '(s, b) -> Int -> RowProxy bs -> RowProxy ('(s, b) ': bs)
+
+instance (ShowRowProxy a) => Show (RowProxy a) where
+  show p = "(" ++ showRowProxy p
+
+class ShowRowProxy (a :: [(Symbol, Type)]) where
+  showRowProxy :: RowProxy a -> String
+
+instance ShowRowProxy '[] where
+  showRowProxy _ = ")"
+
+instance {-# OVERLAPPING #-} (KnownSymbol s, Typeable a) => ShowRowProxy '[ '(s, a)] where
+  showRowProxy (ConsProxy _ offset NilProxy) =
+    symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ ")"
+
+instance (KnownSymbol s, Typeable a, ShowRowProxy as) => ShowRowProxy ('(s, a) ': as) where
+  showRowProxy (ConsProxy _ offset as) =
+    symbolVal (Proxy @s) ++ " :: " ++ show offset ++ " :: " ++ show (typeRep (Proxy @a)) ++ rest
+    where
+      rest = case showRowProxy as of
+        ")" -> ")"
+        xs -> ", " ++ xs
+
+class ToRowProxy (a :: [(Symbol, Type)]) where
+  toRowProxy :: Int -> RowProxy a
+
+instance ToRowProxy '[] where
+  toRowProxy _ = NilProxy
+
+instance (KnownSymbol s, Storable a, ToRowProxy as) => ToRowProxy ('(s, a) ': as) where
+  toRowProxy offset =
+    ConsProxy (Proxy @'(s, a)) offset (toRowProxy @as $ offset + sizeOf (undefined :: a))

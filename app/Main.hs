@@ -5,14 +5,12 @@ module Main where
 
 import Bungalow
 import Bungalow.Row
-import Bungalow.Table
-import Data.Int (Int32)
+import Data.Int
 
 main :: IO ()
 main = do
-  t <- newTable @'[ '("x", Int32), '("y", Int32), '("z", Int32)]
-  t' <- insert ((1 :: Int32) :& (2 :: Int32) :& (3 :: Int32)) t
-  x <- select @'["y", "x"] t'
+  db <- toDatabase @'[Schema "users" '[ '("x", Int32), '("y", Int32), '("z", Int32)]]
+  db' <- insert @"users" ((1 :: Int32) :& (2 :: Int32) :& (3 :: Int32)) db
+  x <- select @"users" @'["y", "x"] db'
   print x
-  let db = database "users" t'
   run "SELECT y FROM users" db

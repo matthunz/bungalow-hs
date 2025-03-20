@@ -16,8 +16,10 @@ module Bungalow.Table where
 
 import Bungalow.Row
 import Data.Kind
+import Data.Proxy
 import Foreign
 import GHC.TypeLits
+import Unsafe.Coerce
 import Prelude hiding (lookup)
 
 data Table (a :: [(Symbol, Type)]) = Table
@@ -60,3 +62,32 @@ insertRow row table = withForeignPtr (tablePtr table) $ \p -> do
 lookup :: forall a b. (Storable (Row a)) => Int -> Table b -> IO (Row a)
 lookup i table = withForeignPtr (tablePtr table) $ \p -> do
   peek (p `plusPtr` (i * sizeOf (undefined :: Row a)))
+
+type family SelectFromT' (s :: Symbol) (as :: [(Symbol, Type)]) where
+  SelectFromT' s ('(s, a) ': xs) = a
+  SelectFromT' s ('(t, a) ': xs) = SelectFromT' s xs
+
+type family SelectFromT (s :: [Symbol]) (as :: [(Symbol, Type)]) where
+  SelectFromT '[] as = '[]
+  SelectFromT (s ': ss) as = '(s, SelectFromT' s as) ': SelectFromT ss as
+
+class LookupProxy a where
+  lookupProxy :: RowProxy a -> Table b -> IO (Row a)
+
+instance LookupProxy '[] where
+  lookupProxy _ _ = return Nil
+
+instance (KnownSymbol s, Storable b, LookupProxy bs) => LookupProxy ('(s, b) ': bs) where
+  lookupProxy (ConsProxy _ offset as) table = do
+    row <- withForeignPtr (tablePtr table) $ \p -> peek (p `plusPtr` offset)
+    rest <- lookupProxy as $ unsafeCoerce table
+    return (Cons (Proxy @s) row rest)
+
+select ::
+  forall as bs.
+  (LookupProxy (SelectFromT as bs), ToRowProxy (SelectFromT as bs)) =>
+  Table bs ->
+  IO (Row (SelectFromT as bs))
+select table = do
+  let row = toRowProxy @(SelectFromT as bs) 0
+  lookupProxy row table
