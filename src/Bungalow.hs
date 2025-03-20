@@ -7,6 +7,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -25,6 +26,7 @@ import qualified Data.Map as Map
 import Data.Proxy
 import Data.Typeable
 import Foreign
+import GHC.OverloadedLabels
 import GHC.TypeLits
 import Text.Parsec
 import Text.Parsec.String
@@ -99,11 +101,11 @@ data SomeTable
 
 data Schema (s :: Symbol) (a :: [(Symbol, Type)])
 
-class ToDatabase (as :: [Type]) where
-  toDatabase :: IO (Database as)
+class NewDatabase (as :: [Type]) where
+  newDatabase :: IO (Database as)
 
-instance ToDatabase '[] where
-  toDatabase = return $ Database Map.empty
+instance NewDatabase '[] where
+  newDatabase = return $ Database Map.empty
 
 instance
   ( KnownSymbol s,
@@ -112,13 +114,13 @@ instance
     ShowRowProxy a,
     ToRowProxy a,
     ToTableSchema a,
-    ToDatabase as
+    NewDatabase as
   ) =>
-  ToDatabase (Schema s a ': as)
+  NewDatabase (Schema s a ': as)
   where
-  toDatabase = do
+  newDatabase = do
     t <- newTable @a
-    db <- toDatabase @as
+    db <- newDatabase @as
     return $ (Database (Map.singleton (symbolVal $ Proxy @s) (SomeTable t)) <> unsafeCoerce db)
 
 newtype Database (as :: [(Type)]) = Database {unDatabase :: Map String SomeTable}
@@ -165,28 +167,51 @@ class HasTable (s :: Symbol) (as :: [(Type)]) where
   getTable :: Database as -> Table (HasTableT s as)
   withTable :: (Table (HasTableT s as) -> IO (Table (HasTableT s as))) -> Database as -> IO (Database as)
 
-instance ( HasTable' (HasTableT' s as) s as ) => HasTable s as where
+instance (HasTable' (HasTableT' s as) s as) => HasTable s as where
   getTable = getTable' @(HasTableT' s as) @s @as
   withTable = withTable' @(HasTableT' s as) @s @as
-    
+
+data Alias (alias :: Symbol) = Alias deriving (Eq, Ord, Show)
+
+aliasVal :: forall s. (KnownSymbol s) => Alias s -> String
+aliasVal _ = symbolVal (Proxy @s)
+
+instance (a ~ b) => IsLabel a (Alias b) where
+  fromLabel = Alias
+
+type family (++) (as :: [k]) (bs :: [k]) :: [k] where
+  '[] ++ bs = bs
+  (a ': as) ++ bs = a ': (as ++ bs)
+
+newtype Field a = Field (Alias a)
+
+field :: forall s. (KnownSymbol s) => Alias s -> Field s
+field = Field
+
+type family Selectable (a :: Type) :: [Symbol] where
+  Selectable (Field s) = '[s]
+  Selectable (a :& b) = Selectable a ++ Selectable b
 
 select ::
   forall s as bs.
   ( HasTable s bs,
-    LookupProxy (SelectFromT as (HasTableT s bs)),
-    ToRowProxy (SelectFromT as (HasTableT s bs))
+    LookupProxy (SelectFromT (Selectable as) (HasTableT s bs)),
+    ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs))
   ) =>
+  as ->
+  Alias s ->
   Database bs ->
-  IO (Row (SelectFromT as (HasTableT s bs)))
-select db = Table.select @as @(HasTableT s bs) $ getTable @s db
+  IO (Row (SelectFromT (Selectable as) (HasTableT s bs)))
+select _ _ db = Table.select @(Selectable as) @(HasTableT s bs) $ getTable @s db
 
 insert ::
   forall s as bs.
   (HasTable s bs, ToRow (HasTableT s bs) as, Storable (Row (HasTableT s bs))) =>
+  Alias s ->
   as ->
   Database bs ->
   IO (Database bs)
-insert as db =
+insert _ as db =
   withTable @s (\t -> Table.insert @as @(HasTableT s bs) as t) db
 
 data TableProxy a = TableProxy (RowProxy a) String
