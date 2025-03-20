@@ -8,9 +8,6 @@ import MyLib
 
 main :: IO ()
 main = do
-  t <- newTable
-  t' <- insert (Cons (1 :: Int32) (Cons (2 :: Int32) Nil)) t
-  t'' <- insert (Cons (3 :: Int32) (Cons (4 :: Int32) Nil)) t'
-  r <- MyLib.lookup 0 t''
-  r' <- MyLib.lookup 1 t''
-  print (r, r')
+  t <- newTable @'[ '("x", Int32), '("y", Int32)]
+  let db = database "users" t
+  run "SELECT x, y FROM users" db
