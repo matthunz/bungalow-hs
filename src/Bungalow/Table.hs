@@ -59,9 +59,12 @@ insertRow row table = withForeignPtr (tablePtr table) $ \p -> do
               tableLength = tableLength table + sizeOf (undefined :: Row a)
             }
 
-lookup :: forall a b. (Storable (Row a)) => Int -> Table b -> IO (Row a)
+lookup :: forall a b. (Storable (Row a)) => Int -> Table b -> IO (Maybe (Row a))
 lookup i table = withForeignPtr (tablePtr table) $ \p -> do
-  peek (p `plusPtr` (i * sizeOf (undefined :: Row a)))
+  let offset = i * sizeOf (undefined :: Row a)
+  if offset < tableOffset table
+    then Just <$> peek (p `plusPtr` offset)
+    else return Nothing
 
 type family SelectFromT' (s :: Symbol) (as :: [(Symbol, Type)]) where
   SelectFromT' s ('(s, a) ': xs) = a
@@ -85,9 +88,14 @@ instance (KnownSymbol s, Storable b, LookupProxy bs) => LookupProxy ('(s, b) ': 
 
 select ::
   forall as bs.
-  (LookupProxy (SelectFromT as bs), ToRowProxy (SelectFromT as bs)) =>
+  ( LookupProxy (SelectFromT as bs),
+    ToRowProxy (SelectFromT as bs),
+    Storable (Row (SelectFromT as bs))
+  ) =>
   Table bs ->
-  IO (Row (SelectFromT as bs))
+  IO (Maybe (Row (SelectFromT as bs)))
 select table = do
   let row = toRowProxy @(SelectFromT as bs) 0
-  lookupProxy row table
+  if tableLength table >= (sizeOf (undefined :: Row (SelectFromT as bs)))
+    then Just <$> lookupProxy row table
+    else return Nothing

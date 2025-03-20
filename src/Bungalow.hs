@@ -70,11 +70,12 @@ select = Select
 instance
   ( HasTable s bs,
     LookupProxy (SelectFromT (Selectable as) (HasTableT s bs)),
-    ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs))
+    ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs)),
+    Storable (Row (SelectFromT (Selectable as) (HasTableT s bs)))
   ) =>
   Eval bs (Select as s)
   where
-  type EvalT bs (Select as s) = Row (SelectFromT (Selectable as) (HasTableT s bs))
+  type EvalT bs (Select as s) = Maybe(Row (SelectFromT (Selectable as) (HasTableT s bs)))
 
   eval s = Access $ do
     db <- get

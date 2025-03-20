@@ -196,12 +196,13 @@ select ::
   forall s as bs.
   ( HasTable s bs,
     LookupProxy (SelectFromT (Selectable as) (HasTableT s bs)),
-    ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs))
+    ToRowProxy (SelectFromT (Selectable as) (HasTableT s bs)),
+    Storable (Row (SelectFromT (Selectable as) (HasTableT s bs)))
   ) =>
   as ->
   Alias s ->
   Database bs ->
-  IO (Row (SelectFromT (Selectable as) (HasTableT s bs)))
+  IO (Maybe (Row (SelectFromT (Selectable as) (HasTableT s bs))))
 select _ _ db = Table.select @(Selectable as) @(HasTableT s bs) $ getTable @s db
 
 insert ::
